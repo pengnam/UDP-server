@@ -5,39 +5,6 @@ Is this a group submission (no)?
 
 */
 
-
-// Please DO NOT copy from the Internet (or anywhere else)
-// Instead, if you see nice code somewhere try to understand it.
-//
-// After understanding the code, put it away, do not look at it,
-// and write your own code.
-// Subsequent exercises will build on the knowledge that
-// you gain during this exercise. Possibly also the exam.
-//
-// We will check for plagiarism. Please be extra careful and
-// do not share solutions with your friends.
-//
-// Good practices include
-// (1) Discussion of general approaches to solve the problem
-//     excluding detailed design discussions and code reviews.
-// (2) Hints about which classes to use
-// (3) High level UML diagrams
-//
-// Bad practices include (but are not limited to)
-// (1) Passing your solution to your friends
-// (2) Uploading your solution to the Internet including
-//     public repositories
-// (3) Passing almost complete skeleton codes to your friends
-// (4) Coding the solution for your friend
-// (5) Sharing the screen with a friend during coding
-// (6) Sharing notes
-//
-// If you want to solve this assignment in a group,
-// you are free to do so, but declare it as group work above.
-
-
-
-
 import java.net.*;
 import java.nio.*;
 import java.nio.file.*;
@@ -61,51 +28,104 @@ class Alice {
     new Alice(args[0], Integer.parseInt(args[1]), args[2]);
   }
 
-  public Alice(String fileToSend, int port, String filenameAtBob) throws Exception {
+  public Alice(String fileToSend, int port, String filenameAtBob) throws Exception{
     //Initialise parameters
-    int MSS = 1024;
+    int MSS = 1012;
     int portNo = 5678;
     socket = new DatagramSocket(portNo);
     InetAddress address = InetAddress.getByName("localhost");
-    InputStream input = getFileInputStream(fileToSend);
+    InputStream input = getFileStream(fileToSend);
+ 
+    //Buffer byte array
+    byte[] bytes;
+    int bytesLeft = input.available();
 
-    while (input) {//Check if input stream is empty
-      
-      int seqNum = wait(socket);
-      
-      
+    //1. Sending configuration details
+    byte[] name = filenameAtBob.getBytes();
+    ByteBuffer bb = ByteBuffer.allocate(name.length);
+    bb.put(name);
+    DatagramPacket first = Packet.generatePacket(seqNum,bb.array(),address,port);
+    while (true) {
+      try {
+        System.out.println("Sending initial pkt");
+        socket.send(first);
+        int pktNum = waitAck(socket);
+        if (seqNum != pktNum) {
+          System.out.println("Wrong packet num");
+          continue;
+        }
+        seqNum = (seqNum==1) ? 0 : 1;
+        break;
+      } catch (SocketTimeoutException e) {
+        System.out.println("Socket timed out, resending");
+        continue;
+      } catch (Exception e){
+        System.out.println("Misc Error Occured");
+        System.err.println(e.getMessage());
+        continue;
+      }
+    }
+    
+
+    //2. Sending file
+    while (bytesLeft > 0) {//Check if input stream is empty
+      System.out.println("=============================================");
+      System.out.println("Preparing packet");
+      System.out.println("Bytes left: "+ bytesLeft);
+
+      bytes = (bytesLeft > MSS)? new byte[MSS]: new byte[bytesLeft];
+      //Read input
+      input.read(bytes);
+      bytesLeft = input.available();
+
+      DatagramPacket pkt = Packet.generatePacket(seqNum, bytes, address, port);
+      //To keep trying to send packet if it is valid
+      while (true) {
+        try {
+          System.out.println("Sending pkt" + seqNum);
+          socket.send(pkt);
+          int ackNum = waitAck(socket);
+          if (seqNum != ackNum) {
+            System.out.println("Wrong packet num");
+            System.out.println("Seqnum: " + seqNum);
+            System.out.println("AckNum: " + ackNum);
+            continue;
+          }
+          seqNum = (seqNum==1) ? 0 : 1;
+          break;
+        } catch (SocketTimeoutException e) {
+          System.out.println("Socket timed out, resending");
+          continue;
+        } catch (Exception e){
+          System.err.println(e.getMessage());
+          continue;
+        }
+      }
+
     }
 
-    
 
-    
-    
+
   }
+
   /**
    * Wait for response with socket
    * @param socket socket to wait for response in
    */
-  private int wait(DatagramSocket socket) {
+  private int waitAck(DatagramSocket socket) throws Exception{
+    System.out.println("Waiting for ACK");
     byte[] rcvBuffer = new byte[1024];
     DatagramPacket rcvedPkt = new DatagramPacket(rcvBuffer, rcvBuffer.length);
-    byte[] allData = null;
-    byte[] givenChecksum = null;
-    byte[] data = null;
+  
+    //Wait for packet to be received
+    socket.setSoTimeout(100);
+    socket.receive(rcvedPkt);//Wait here until packet is received
 
-    try {
-      socket.receive(rcvedPkt);//Wait here until packet is received
-    
-      allData = rcvedPkt.getData();
-      givenChecksum = Arrays.copyOfRange(allData,0,8);
-      data = Arrays.copyOfRange(allData,8,allData.length);
-    
-      boolean val = validateChecksum(givenChecksum, data);
-    } catch (Exception e) {
-      System.err.println(e.getMessage());
-    }
-    //HACK: convert bytearr to string before converting it to int
-    String str = new String(data);
-    return Integer.parseInt(str);
+    Packet pkt = Packet.parsePacket(rcvedPkt);
+    System.out.println("Received ack" + pkt.getSeqNum());
+    if (!pkt.validateChecksum())
+      throw new Exception("Checksum failed");
+    return pkt.getSeqNum();
   }
 
   
@@ -124,51 +144,5 @@ class Alice {
     return result;
   }
 
-  /**
-   * Wrapper with checksum
-   * @param data byte array to be sent
-   */
-  private byte[] wrapWithChecksum(byte[] data) {
-
-    //cs calculates checksum
-    Checksum cs = new CRC32();
-    cs.update(data);
-    
-    //b is checksum in bytes
-    byte b[] = new byte[8];
-    ByteBuffer buf = ByteBuffer.wrap(b);
-    buf.putLong(cs.getValue());
-
-    return concatenate(b,data);
-  }
-  /**
-   * Checks the checksum given checksum and data
-   * Pre-condition: 
-   * @param givenChecksum the given checksum in packet
-   * @param data data in packet
-   */
-  private boolean validateChecksum(byte[] givenChecksum, byte[] data) {
-    Checksum cs = new CRC32();
-    cs.update(data);
-    byte calcChecksum[] = new byte[8];
-    ByteBuffer buf = ByteBuffer.wrap(calcChecksum);
-    buf.putLong(cs.getValue());
-    
-    return Arrays.equals(givenChecksum, calcChecksum);
-  }
-
-  /**
-   * Concatenates 2 byte[] into a single byte[]
-   * This is a function provided for your convenience.
-   * @param  buffer1 a byte array
-   * @param  buffer2 another byte array
-   * @return concatenation of the 2 buffers
-   */
-  private byte[] concatenate(byte[] buffer1, byte[] buffer2) {
-    byte[] returnBuffer = new byte[buffer1.length + buffer2.length];
-    System.arraycopy(buffer1, 0, returnBuffer, 0, buffer1.length);
-    System.arraycopy(buffer2, 0, returnBuffer, buffer1.length, buffer2.length);
-    return returnBuffer;
-  }
 
 }
